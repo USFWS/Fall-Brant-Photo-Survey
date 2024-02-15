@@ -1,0 +1,549 @@
+---
+title: "Evaluate YOLOv5 Training Results on Izembek Brant"
+author: "Erik E. Osnas"
+format:
+  html:
+    embed-resources: true
+editor: visual
+execute:
+  echo: false
+  message: false
+  warning: false
+---
+
+## Trained Models
+
+There are three trained models to evaluate. First was a model originally trained by Dan, and then two others trained by him after discovering a bug in the first training procedure. The two new models include a "checkpoint" model that captures the model parameters at a specific point before the training was complete. Dan felt this might be a better model for counting than the final model, perhaps due to some issues of over fitting. The third model is the end point of the most recent training run. The model names and shorthand name used here is in the table below.
+
+| Original Name                                               | Short Name      |
+|------------------------------------|------------------------------------|
+| usgs-geese-yolov5x6-b8-img1280-e125-of-200-20230401-ss-best | ss-original     |
+| usgs-geese-yolov5x-230820-b8-img1280-e200-best              | e200-best       |
+| usgs-geese-yolov5x-230820-b8-img1280-2023.09.02-best        | checkpoint-best |
+
+
+
+## Human-Counted Data Sets
+
+Human-counted image data from the years 2017-2019 is described in
+
+Weiser, E. L., P. L. Flint, D. K. Marks, B. S. Shults, H. M. Wilson, S. J. Thompson, and J. B. Fischer. 2023. Optimizing surveys of fall-staging geese using aerial imagery and automated counting. Wildlife Society Bulletin 47(1):e1407. <doi:10.1002/wsb.1407>
+
+The human counts were obtained from Emily Weiser as csv files of counts produced from CountThings and human validated counts. There were 10 replicate surveys in this set. For all but one, the human only checked those photos where CountThings found geese of any species. For one survey on 2017-10-03, the human examined all photos and counted all geese.
+
+In the analysis below, I assumed that the human count represents the true count and examined the number and proportion of false positives--the algorithm counts a goose but the human did not--and the number of false negatives--the human counted a goose but the algorithm did not. A table of the number of photos that were human-validated is below. 
+
+```{r}
+#| echo: false
+#| label: data
+
+
+library(tidyverse, quietly = TRUE)
+library(ggpubr)
+options(dplyr.summarise.inform = FALSE) 
+options(tidyverse.quiet = TRUE)
+################################################################################
+# three years, multiple replicate per year
+# only for the replicate on 2017-10-03 were all photos manually counts
+# on all other replicates, only those photos where CountThings found geese were manually counted
+# read in data for manually counted photos
+files <- list.files(path="goose_fallSurveyCounts_izembek_weiser/goose_fallSurveyCounts_izembek_weiser", 
+                    full.names = TRUE,
+                    recursive = TRUE,
+                    pattern = "csv")
+#the first csv file seems to have redundant column, delete and add
+dat1 <- read_csv(files[1], col_select = 1:20) %>%
+  mutate(File = 1)
+dat <- map_dfr(files[-1], read_csv, .id = "File") %>%
+  mutate(File = as.numeric(File)+1)
+#rearrange dat1
+dat1 <- dat1[,c(names(dat1)[21],names(dat1)[-21])]
+names(dat1) <- names(dat)
+dat <- bind_rows(dat1, dat)
+rm(dat1)
+dat <- dat %>%
+  mutate(Year = year(Date), Month = month(Date), Day = day(Date)) %>%
+  # mutate(Replicate = if_else(File %in% 1:2, 1, 
+  #                            if_else(File %in% 3:4, 2,
+  #                                    if_else(File %in% 5:6, 3, 
+  #                                            if_else(File %in% 7:8, 4, 
+  #                                                    if_else(File %in% 9:10, 5, NA)))))) %>%
+  #add common file name to manually counted data
+  mutate(FileName = paste0(JPG, ".JPG"))
+#in dat there seems to be a duplicate row for CAM10003 on 2017-10-03
+#there are actually three duplicate rows, try duplicate(dat), we will remove these
+dat <- distinct(dat)
+df.total <- dat %>% mutate(Replicate = factor(Date), 
+                     Manual_Brant = replace_na(Manual_Brant, 0)) %>%
+  group_by(Replicate) %>%
+  summarise(N_Photos = n(), Total_Manual = sum(Manual_Brant))
+knitr::kable(df.total)
+```
+
+
+## Photo Inference
+
+Dan ran each model (e200-best, checkpoint-best, and ss-original) on two sets of photos. First was an "eval" set that was not used during training, and a second was all photos from the 2017-10-03 replicate, which was also not used for training. Just as a reminder, the photos in the "eval" set only included those where CountThings found geese; whereas, for the 2017-10-03 replicate, all photos were counted. A table below shows the number of validation photos used in each replicate. After inference, Dan post-processed the resulting json file to produce count of birds at the 0.4, 0.5, and 0.6 confidence levels. I re-ran this post-processing step to include confidence level from 0.1 to 0.9.  
+
+```{r}
+#| echo: false
+#| label: yolo
+
+#read in yolo results
+# there are three trained models as described in email from Dan:
+#   (1) ...e200-best... was the one produced after in Sep of 2023 after a bug 
+#       was discovered in original training run
+#   (2) ...2023-09-02-best... was a 'checkpoint' that Dan saved during training 
+#       and thought this might be better than the final model (see email)
+#   (3) ...ss.best... was the original trained model with bug. Dan is sure this 
+#       one is worse than either of the first two. 
+# each model was then used to count photos from an (1) "evaluation set" and 
+#  (2) all the photos for the 2017-10-03 survey
+# We will combine these for evaluation
+#first from model usgs-geese-yolov5x-230820-b8-img1280-e200-best and "eval" set, see email
+path1 <- "YOLO-training-inference-results/2023-09-11-results/counts-e200-best-eval.csv"
+yolo1 <- read_csv(file = path1) 
+path2 <- "YOLO-training-inference-results/2023-09-11-results/counts-e200-best-rep.csv"
+yolo_best <- read_csv(file = path2) %>%
+  rbind(yolo1) %>%
+  mutate(FileName = str_sub(filename, -12, -1), 
+         Date = as.Date(str_sub(filename, 34, 43))) %>% 
+  left_join(dat, by = c("FileName", "Date")) %>%
+  filter(!is.na(Latitude)) #drop yolo count not in CountThings or manually counted set
+#now load next model:
+# ...2023-09-02-best...
+path1 <- "YOLO-training-inference-results/2023-09-11-results/counts-2023.09.02-best-eval.csv"
+yolo1 <- read_csv(file = path1) 
+path2 <- "YOLO-training-inference-results/2023-09-11-results/counts-2023.09.02-best-rep.csv"
+yolo_best2 <- read_csv(file = path2) %>%
+  rbind(yolo1) %>%
+  mutate(FileName = str_sub(filename, -12, -1), 
+         Date = as.Date(str_sub(filename, 34, 43))) %>% 
+  left_join(dat, by = c("FileName", "Date")) %>%
+  filter(!is.na(Latitude)) #drop yolo count not in CountThings or manually counted set
+#Now load original model with bug
+# ...ss-best...
+path1 <- "YOLO-training-inference-results/2023-09-11-results/counts-ss-best-eval.csv"
+yolo1 <- read_csv(file = path1) 
+path2 <- "YOLO-training-inference-results/2023-09-11-results/counts-ss-best-rep.csv"
+yolo_ss <- read_csv(file = path2) %>%
+  rbind(yolo1) %>%
+  mutate(FileName = str_sub(filename, -12, -1), 
+         Date = as.Date(str_sub(filename, 34, 43))) %>% 
+  left_join(dat, by = c("FileName", "Date")) %>%
+  filter(!is.na(Latitude)) #drop yolo count not in CountThings or manually counted set
+df.eval <- yolo_best %>%
+  filter(threshold_brant == 0.1) %>%
+  mutate(Replicate = factor(Date), 
+         Manual_Brant = replace_na(Manual_Brant, 0)) %>%
+  group_by(Replicate) %>%
+  summarise(n = n(), Total_Manual = sum(Manual_Brant))
+knitr::kable(df.eval)
+```
+
+## Model Evaluation
+
+For this evaluation, I only examined brant. Also, for quantities that depend on the number of birds counted (number of false positives or false negatives), I expressed these as a proportion of the total manual count for the replicate because the total number of photos and brant used for this evaluation varied greatly across replicates (see Table above). 
+
+First, I plotted the YOLO count verses the manual count for each model and confidence threshold. In the plot below, I assumed that if there was no manual count, the photo contained zero geese (i.e., the CountThings count was zero). 
+
+```{r}
+#| echo: false
+#| label: xyplot
+
+#plot some results
+df <- select(yolo_best, FileName, Date, threshold_brant, 
+             YOLO_Brant = count_brant, Manual_Brant) %>%
+  mutate(threshold_brant = factor(threshold_brant)) %>%
+  filter(!is.na(Manual_Brant))
+p1 <- ggplot(data = df, aes(x=Manual_Brant, y = YOLO_Brant, color = threshold_brant)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0) + 
+  labs(title = "e200-best")
+df <- select(yolo_best2, FileName, Date, threshold_brant, 
+             YOLO_Brant = count_brant, Manual_Brant) %>%
+  mutate(threshold_brant = factor(threshold_brant)) %>%
+  filter(!is.na(Manual_Brant))
+p2 <- ggplot(data = df, aes(x=Manual_Brant, y = YOLO_Brant, color = threshold_brant)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0) + 
+  labs(title = "checkpoint-best")
+df <- select(yolo_ss, FileName, Date, threshold_brant, 
+             YOLO_Brant = count_brant, Manual_Brant) %>%
+  mutate(threshold_brant = factor(threshold_brant)) %>%
+  filter(!is.na(Manual_Brant))
+p3 <- ggplot(data = df, aes(x=Manual_Brant, y = YOLO_Brant, color = threshold_brant)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0) + 
+  labs(title = "ss-original")
+ggarrange(p1, p2, p3, common.legend = TRUE)
+```
+
+It appears that all models give similar results and that using very high confidence thresholds ($\geq$ 0.8) leads to severe under counting. Conversely, using very low thresholds ($\leq$ 0.4) leads to moderate over counting for photos with brant and can lead to large over counting for photos that had zero manual counts. 
+
+Next, I dropped all photos that were not manually counted and calculated the total number of geese counted by YOLO for each replicate and confidence threshold. I then plotted the resulting YOLO total as a proportion of the manual count ("pCount", below) for each threshold.  
+
+```{r}
+#| echo: false
+#| message: false
+#| lable: pCount
+
+#drop everything without a manual count (don't really know 'truth' here)
+df <- yolo_best %>% 
+  filter(!is.na(Manual_Brant)) %>%
+  select(FileName, Date, threshold_brant, count_brant, Manual_Brant) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Count = sum(count_brant), Manual_Count = sum(Manual_Brant), 
+            pCount = YOLO_Count/Manual_Count,  
+            n = n())
+# ggplot(data = df, aes(x=threshold_brant, y = YOLO_Count, col=Replicate)) +
+#   geom_line() + 
+#   geom_abline(aes(slope = 0, intercept = Manual_Count)) + 
+#   scale_x_continuous(breaks = 1:9/10)
+p1 <- ggplot(data = df, aes(x=threshold_brant, y = pCount, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  geom_abline(aes(slope = 0, intercept = 1)) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(breaks = 1:13/10) +
+  labs(title = "e200-best")
+df <- yolo_best2 %>% 
+  filter(!is.na(Manual_Brant)) %>%
+  select(FileName, Date, threshold_brant, count_brant, Manual_Brant) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Count = sum(count_brant), Manual_Count = sum(Manual_Brant), 
+            pCount = YOLO_Count/Manual_Count,  
+            n = n())
+p2 <- ggplot(data = df, aes(x=threshold_brant, y = pCount, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  geom_abline(aes(slope = 0, intercept = 1)) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(breaks = 1:13/10) +
+  labs(title = "checkpoint-best")
+df <- yolo_ss %>% 
+  filter(!is.na(Manual_Brant)) %>%
+  select(FileName, Date, threshold_brant, count_brant, Manual_Brant) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Count = sum(count_brant), Manual_Count = sum(Manual_Brant), 
+            pCount = YOLO_Count/Manual_Count,  
+            n = n())
+p3 <- ggplot(data = df, aes(x=threshold_brant, y = pCount, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  geom_abline(aes(slope = 0, intercept = 1)) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(breaks = 1:13/10) +
+  labs(title = "ss-original")
+ggarrange(p1, p2, p3, common.legend = TRUE, ncol = 3, nrow = 1)
+```
+
+The above shows that, compared to manual counts, the two new models are perhaps less biased but certainly less variable over a wider range of thresholds for most replicates. In these two new models, the bias is high and around 5 - 10% for most replicates and thresholds $\leq$ 0.6. For these models, thresholds > 0.7 start to greatly under count geese. For the original model, there is much more variance in the proportion of the YOLO count across replicates. Note that for the replicates on 2017-10-03 and 2018-10-12, the YOLO count shows high positive bias for most thresholds < 0.7. Because the replicate on 2017-10-03 had all photos manually counted, this high bias of the YOLO is likely due to false positive in photos where no geese where manually detected. In the other replicates, this is probably also occurring, but is not reflected in the results above because these only include photos that were manually counted. I examine false positives next. 
+
+### False Positives
+
+I first defined false positives as the case where YOLO found brant on a photo but the manual count either (1) did not find any brant or (2) the manual count was missing (i.e., was NA because CountThings did not find any geese of any species). This makes the assumption that (1) the manual count is correct and (2) CountThings was highly actuate at finding geese and essentially at least as accurate as the manual count. For each replicate and threshold, I calculated the sum of the number of brant found by YOLO in photos that either had zero manual or CountThings count and then plotted this as a proportion of the manual count. 
+
+```{r}
+#| echo: false
+#| label: falsepos
+
+#look at false positives
+#How many photos does YOLO say have geese but none were found in manual counts
+#this includes where CountThings did not find any, Manual_Brant == 0
+df <- yolo_best %>% 
+  filter(count_brant > 0 & (Manual_Brant == 0 | is.na(Manual_Brant))) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Brant = sum(count_brant), n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(YOLO_Brant = YOLO_Brant/Total_Manual)
+p1 <- ggplot(data = df, aes(x=threshold_brant, y = YOLO_Brant, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "e200-best")
+#find total number of photos manually counted by replicate
+mtot <- yolo_best %>% 
+  #filter(! is.na(Manual_Brant)) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(n_Manual = n())
+df <- left_join(mtot, df) %>%
+  replace_na(list(YOLO_Brant = 0, n = 0)) %>%
+  mutate(pFalsePositives = n/n_Manual)
+#plot proportion of photos that are false positive
+pp1 <- ggplot(data = df, aes(x=threshold_brant, y = pFalsePositives, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "e200-best")
+df <- yolo_best2 %>% 
+  filter(count_brant > 0 & (Manual_Brant == 0 | is.na(Manual_Brant))) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Brant = sum(count_brant), n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(YOLO_Brant = YOLO_Brant/Total_Manual)
+p2 <- ggplot(data = df, aes(x=threshold_brant, y = YOLO_Brant, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "checkpoint-best")
+#find total number of photos manually counted by replicate
+mtot <- yolo_best2 %>% 
+  #filter(! is.na(Manual_Brant)) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(n_Manual = n())
+df <- left_join(mtot, df) %>%
+  replace_na(list(YOLO_Brant = 0, n = 0)) %>%
+  mutate(pFalsePositives = n/n_Manual)
+#plot proportion of photos that are false positive
+pp2 <- ggplot(data = df, aes(x=threshold_brant, y = pFalsePositives, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "checkpoint-best")
+df <- yolo_ss %>% 
+  filter(count_brant > 0 & (Manual_Brant == 0 | is.na(Manual_Brant))) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Brant = sum(count_brant), n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(YOLO_Brant = YOLO_Brant/Total_Manual)
+p3 <- ggplot(data = df, aes(x=threshold_brant, y = YOLO_Brant, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "ss-original")
+#find total number of photos manually counted by replicate
+mtot <- yolo_ss %>% 
+  #filter(! is.na(Manual_Brant)) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(n_Manual = n())
+df <- left_join(mtot, df) %>%
+  replace_na(list(YOLO_Brant = 0, n = 0)) %>%
+  mutate(pFalsePositives = n/n_Manual)
+#plot proportion of photos that are false positive
+pp3 <- ggplot(data = df, aes(x=threshold_brant, y = pFalsePositives, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "ss-original")
+ggarrange(p1, p2, p3, common.legend = TRUE, ncol = 3, nrow = 1)
+```
+
+In the above plot, most replicates seem to have fairly low proportion of false positives across all thresholds. The the exception is the 2017-10-03 replicate, where false positives could exceed 10%. Even for this replicate, however, the proportion was low for thresholds > 0.6 or so.  
+
+Second, I examined the proportion of photos that contained false positives across replicates and thresholds. 
+
+```{r}
+#| echo: false
+#| lable: fp2
+ggarrange(pp1, pp2, pp3, common.legend = TRUE, ncol = 3, nrow = 1)
+```
+
+One interesting thing to note is that the 2017-10-03 replicate does not stand out from the rest, which means it has a similar proportion of photos with false positives. 
+
+Finally, I calculated the sum of the positive differences between the YOLO count and the manual count and then expressed this as a proportion of the manual count. In the case where the manual count was missing because no geese where detected by CountThings, I assumed the manual count was zero. 
+
+```{r}
+#| echo: false
+#| message: false
+
+fp1 <- yolo_best %>% 
+  mutate(Replicate = factor(Date), 
+         Manual_Brant = replace_na(Manual_Brant, 0)) %>%
+  filter(count_brant > Manual_Brant) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(FalsePositives = sum(count_brant - Manual_Brant), n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(FalsePositives = FalsePositives/Total_Manual)
+p1 <- ggplot(data = fp1, aes(x=threshold_brant, y = FalsePositives, 
+                            col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "e200-best")
+fp2 <- yolo_best2 %>% 
+  mutate(Replicate = factor(Date), 
+         Manual_Brant = replace_na(Manual_Brant, 0)) %>%
+  filter(count_brant > Manual_Brant) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(FalsePositives = sum(count_brant - Manual_Brant), n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(FalsePositives = FalsePositives/Total_Manual)
+p2 <- ggplot(data = fp2, aes(x=threshold_brant, y = FalsePositives, 
+                            col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "checkpoint-best")
+fp3 <- yolo_ss %>% 
+  mutate(Replicate = factor(Date), 
+         Manual_Brant = replace_na(Manual_Brant, 0)) %>%
+  filter(count_brant > Manual_Brant) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(FalsePositives = sum(count_brant - Manual_Brant), n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(FalsePositives = FalsePositives/Total_Manual)
+p3 <- ggplot(data = fp3, aes(x=threshold_brant, y = FalsePositives, 
+                            col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "ss-original")
+ggarrange(p1, p2, p3, common.legend = TRUE, ncol = 3, nrow = 1)
+```
+
+This shifts the estimated number of false positives up for those replicates where only photos that CountThings detected geese were manually counted (all but the 2017-10-03 replicate). In these cases, the false positive rate becomes $\geq$ 10% as the threshold decreases.
+
+### False Negatives (non-detection)
+
+I defined a false negative as a case where the manual count was > 0 and the YOLO count was < the manual count. I then calculated the difference between the manual count and the YOLO count and summed this over all photos for each replicate and confidence threshold and then expressed this as a proportion of the manual count.   
+
+```{r}
+#| echo: false
+#| message: false
+
+#Now look at false negatives
+df1 <- yolo_best %>% 
+  filter(Manual_Brant > 0 & count_brant < Manual_Brant) %>%
+  mutate(Replicate = factor(Date), Missed_Brant = Manual_Brant - count_brant) %>% 
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Brant = sum(count_brant), Manual_Brant = sum(Manual_Brant),
+            Missed_Brant = sum(Missed_Brant),
+            n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(Missed_Brant = Missed_Brant/Total_Manual)
+p1 <- ggplot(data = df1, aes(x=threshold_brant, y = Missed_Brant, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  #geom_point() + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "e200-best")
+mtot <- yolo_best %>% 
+  #filter(! is.na(Manual_Brant)) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(n_Manual = n())
+df <- left_join(mtot, df1) %>%
+  replace_na(list(Manual_Brant = 0, n = 0)) %>%
+  mutate(pFalseNegatives = n/n_Manual)
+#plot proportion of photos that are false negatives
+pp1 <- ggplot(data = df, aes(x=threshold_brant, y = pFalseNegatives, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "e200-best")
+df2 <- yolo_best2 %>% 
+  filter(Manual_Brant > 0 & count_brant < Manual_Brant) %>%
+  mutate(Replicate = factor(Date), Missed_Brant = Manual_Brant - count_brant) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Brant = sum(count_brant), Manual_Brant = sum(Manual_Brant),
+            Missed_Brant = sum(Missed_Brant),
+            n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(Missed_Brant = Missed_Brant/Total_Manual)
+p2 <- ggplot(data = df2, aes(x=threshold_brant, y = Missed_Brant, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  #geom_point() + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "checkpoint-best")
+mtot <- yolo_best2 %>% 
+  #filter(! is.na(Manual_Brant)) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(n_Manual = n())
+df <- left_join(mtot, df2) %>%
+  replace_na(list(Manual_Brant = 0, n = 0)) %>%
+  mutate(pFalseNegatives = n/n_Manual)
+#plot proportion of photos that are false negatives
+pp2 <- ggplot(data = df, aes(x=threshold_brant, y = pFalseNegatives, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "checkpoint-best")
+df3 <- yolo_ss %>% 
+  filter(Manual_Brant > 0 & count_brant < Manual_Brant) %>%
+  mutate(Replicate = factor(Date), Missed_Brant = Manual_Brant - count_brant) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(YOLO_Brant = sum(count_brant), Manual_Brant = sum(Manual_Brant),
+            Missed_Brant = sum(Missed_Brant),
+            n = n()) %>%
+  left_join(select(df.eval, -n), by = c("Replicate")) %>%
+  mutate(Missed_Brant = Missed_Brant/Total_Manual)
+p3 <- ggplot(data = df3, aes(x=threshold_brant, y = Missed_Brant, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  #geom_point() + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "ss-original")
+mtot <- yolo_best2 %>% 
+  #filter(! is.na(Manual_Brant)) %>%
+  mutate(Replicate = factor(Date)) %>%
+  group_by(threshold_brant, Replicate) %>%
+  summarise(n_Manual = n())
+df <- left_join(mtot, df3) %>%
+  replace_na(list(Manual_Brant = 0, n = 0)) %>%
+  mutate(pFalseNegatives = n/n_Manual)
+#plot proportion of photos that are false negatives
+pp3 <- ggplot(data = df, aes(x=threshold_brant, y = pFalseNegatives, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "ss-original")
+ggarrange(p1, p2, p3, common.legend = TRUE, ncol = 3, nrow = 1)
+```
+
+The proportion of false negatives remain low ($\leq \approx 0.01$) and constant up until the threshold is 0.6 for the two new models. At these thresholds, the old model has a higher false negative rate, meaning that the new models are better at detecting brant. For thresholds > 0.6, the proportion of false negatives increases substantially as the threshold increases. One interesting pattern is that the 2017-10-03 replicate appears to be similar to the others in terms of false negatives.  
+
+Second, I plotted the proportion of photos that had false negatives. Not sure this is that useful, but it shows the patterns of increasing non-detection as the threshold increases beyond 0.6.  
+
+```{r}
+ggarrange(pp1, pp2, pp3, common.legend = TRUE, ncol = 3, nrow = 1)
+```
+
+## Summary  
+
+In general, the new and old models are similar with respect to false positives but the new models are both slightly better with respect to false negatives (non-detection). Over thresholds $\leq 0.6$ both new models fail to detect only about 1% (at maximum) of the brant in the examined photos. False positives where more substantial and range from approximately 1% to $>$10% of the brant found in photos for the new models and thresholds < 0.6. Based on false negatives alone, the new models are an improvement, but appear to be similar to each other.  
+
+In order to put this all together and identify an "optimal" threshold, I searched for the a threshold where the number of false positives is balanced by the number of false negatives. For this I only used the "e200-best" model. Therefore, I calculated the absolute value of the difference, $|false \; positives - false \; negatives|$, for each threshold and replicate. This objective function gives an equal weight to over or under estimates and is linear with the magnitude of the difference. A plot on the log scale to better show the differences between replicates is below:  
+
+```{r}
+#| echo: false
+
+#model 1
+df <- full_join(fp1, df1, by = c("threshold_brant", "Replicate")) %>%
+  select(threshold_brant, Replicate, FalsePositives, Missed_Brant) %>%
+  mutate(FalsePositives = replace_na(FalsePositives, 0), 
+         Missed_Brant = replace_na(Missed_Brant, 0), 
+         Objective = abs(FalsePositives - Missed_Brant))
+ggplot(data = df, aes(x=threshold_brant, y = Objective, col=Replicate)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  scale_y_continuous(trans = "log10") + 
+  labs(title = "e200-best")  
+```
+One thing to note is that for all replicates, the minimum is <5%, and for most the minimum is < 2%, which suggests good performance if we could perfectly choose the correct threshold to use for each replicate. For the 2017-10-03 replicate, the minimum is near 5%. Again this raises some question about the difference in these validation data sets between the replicate where all photos were examined and the photos where only CountThings found geese were examined. Another thing to note is the general variation across replicates, suggesting that in any particular application using one fixed threshold across replicates, there could be some variation in the brant estimate across replicates due to variation in misclassification rate. Under a threshold in the 0.6 to 0.7 range the variation across replicates (<1% to 10%) would lead to biases in the estimated number of brant on the order of 3000 to 30000 across replicates for a total population of 300K. Understanding the reason for this variation across replicates might be something for future work as these methods are applied. In any case the minimum across all replicates is found for thresholds between 0.6 and 0.8. 
+
+To more carefully examine the best threshold to use, I calculated the expectation of the objective function across replicates for each threshold. I gave equal weight to each replicate. A basic tenet from decision theory is to choose (in this case) the threshold with a lowest expectation. In this case, it appears to be near 0.7, but perhaps a more thorough exploration of thresholds around this value is a good idea. 
+
+```{r}
+mObj <- df %>% 
+  group_by(threshold_brant) %>%
+    summarise(mObj = mean(Objective), 
+              sdObj = sd(Objective), 
+              upper = mObj + 2*sdObj,
+              lower = mObj - 2*sdObj)
+
+ggplot(data = mObj, aes(x=threshold_brant, y = mObj)) +
+  # geom_ribbon(aes(x=threshold_brant, y = mObj, 
+  #                    ymin = lower, ymax = upper, 
+  #                 fill = "orange", alpha = 0.5)) +
+  geom_line(linewidth = 1) + 
+  scale_x_continuous(breaks = 1:9/10) + 
+  labs(title = "e200-best") + 
+  ylab(label = "E[Objective | threshold]") + 
+  xlab(label = "Threshold")
+
+```
+
+If a threshold of 0.7 was used, this amounts to `r round(mObj$mObj[mObj$threshold_brant==0.7], 2)` $\pm$ `r round(2*mObj$sdObj[mObj$threshold_brant==0.7], 2)` (2 SD) percent total misclassified brant, given the data we have now. In terms of a brant population estimate of 300K, this amounts to `r round(300*mObj$mObj[mObj$threshold_brant==0.7], 2)`K $\pm$ `r round(2*300*mObj$sdObj[mObj$threshold_brant==0.7], 2)`K (2 SD) brant. In any case, this is calculated on a small number of replicates, so future human validation might be worthwhile to better understand the misclassification properties of this survey.    
