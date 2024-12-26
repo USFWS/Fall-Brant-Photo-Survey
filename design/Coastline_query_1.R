@@ -12,7 +12,7 @@ request <-build_url(test_url)
 st_layers(request)
 
 #Choosing the simplified coastline to read
-ak_coastline <- st_read(request, layer="esri:Alaska_Simplified_Coast")
+ak_coastline <- st_read(request, layer="esri:Alaska_1_63_360")
 
 #Plot
 ggplot(ak_coastline)+

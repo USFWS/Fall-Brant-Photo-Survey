@@ -20,7 +20,7 @@ source("design_functions.R")
 #These will be buffered and simplified based on the exploration in map_area.R
 #main izembek bay
 temp <- tempfile()
-unzip(zipfile = "Izembek_shapefile.zip", exdir = temp)
+unzip(zipfile = "../data/Izembek_shapefile.zip", exdir = temp)
 lag <- read_sf(dsn=temp)
 #simplified lagoon
 lag3 <- st_boundary(st_union(lag)) %>% 
@@ -29,8 +29,8 @@ lag3 <- st_boundary(st_union(lag)) %>%
 lag4 <- st_buffer(lag3, dist = 500)
 #plot
 tmap_mode("view")
-tm_shape(lag3) + tm_polygons(col = "red", alpha = 0.5) + 
-  tm_shape(lag4) + tm_polygons(col = "blue", alpha = 0.5) + 
+tm_shape(lag3) + tm_polygons(col = "red", col_alpha = 0.5) + 
+  tm_shape(lag4) + tm_polygons(col = "blue", col_alpha = 0.5) + 
   tm_basemap(server = "Esri.WorldImagery")
 
 #take lag3 and make a convex hull out of it
@@ -43,10 +43,10 @@ tm_shape(lag3) + tm_polygons(col = "red", alpha = 0.5) +
   tm_basemap(server = "Esri.WorldImagery")
 #should due hull over buffered area 
 lag7 <- st_concave_hull(lag4, ratio = 0.2, allow_holes = FALSE)
-tm_shape(lag3) + tm_polygons(col = "red", alpha = 0.5) + 
+tm_shape(lag3) + tm_polygons(col = "red", col_alpha = 0.5) + 
   #tm_shape(lag4) + tm_polygons(col = "blue", alpha = 0.5) + 
   #tm_shape(lag5) + tm_polygons(col = "orange", alpha = 0.5) + 
-  tm_shape(lag7) + tm_polygons(col = "green", alpha = 0.5) + 
+  tm_shape(lag7) + tm_polygons(col = "green", col_alpha = 0.5) + 
   tm_basemap(server = "Esri.WorldImagery")
 #lag7 looks good
 set.seed(123)
