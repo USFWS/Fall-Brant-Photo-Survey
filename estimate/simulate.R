@@ -6,7 +6,7 @@ sim_obs <- function(
 #Set up true state process
 sample.size = c(1000, 100), #vector to define primary sample size and secondary, etc...
 #Observation process parameters
-r = c(1, 1, 1, 1), #detection probability per individual
+r = list(c(1, 1, 1, 1), c(1, 1, 1, 1)), #detection probability per individual, a list of vectors for each occassion
 theta = matrix(c(1, 0, 0, 0, 
                   0, 1, 0, 0, 
                   0, 0, 1, 0, 
@@ -55,12 +55,12 @@ for(j in 1:n.occ){
   if(j == 1) samples <- samples1
   if(j > 1) samples <- samples2
   #detection process
-  #detection is the Royal-Nichols individual detection model for heterogeneity
+  #detection is the Royle-Nichols individual detection model for heterogeneity
   # p_i = 1-(1-r)^N_i
   Yd <- matrix(rbinom(sample.size[j]*dim(N)[2], size = as.vector(N[samples,]), 
-                      prob = 1-(1-rep(r, each = sample.size[j]))^as.vector(N[samples,])),
+                      prob = 1-(1-rep(r[[j]], each = sample.size[j]))^as.vector(N[samples,])),
                nrow = sample.size[j], ncol = dim(N)[2]) 
-  #This is 'completely independent' detection across primary ans secondary samples
+  #This is 'completely independent' detection across primary and secondary samples
   #colSums(Yd)
   #classification process
   Y$Observed[[j]] <- matrix(NA, sample.size[j], length(lambda))
@@ -85,10 +85,10 @@ Y$Expected <- A*psi*lambda
 return(Y)
 }
 #test it
-sim_obs(sample.size=c(10, 5), lambda = c(10, 1, 0, 0))
-m <- matrix(c(0.7, 0.1, 0.1, 0.1,
-                  0.1, 0.7,    0.1, 0.1,
-                  0.1,    0, 0.8, 0.1,
-                  0.1, 0.1, 0.3, 0.5), 4,4, byrow = TRUE)
-sim_obs(sample.size=c(10, 5), theta = m, lambda = c(10, 1, 0, 0))
+# sim_obs(sample.size=c(10, 5), lambda = c(10, 1, 0, 0))
+# m <- matrix(c(0.7, 0.1, 0.1, 0.1,
+#                   0.1, 0.7,    0.1, 0.1,
+#                   0.1,    0, 0.8, 0.1,
+#                   0.1, 0.1, 0.3, 0.5), 4,4, byrow = TRUE)
+# sim_obs(sample.size=c(10, 5), theta = m, lambda = c(10, 1, 0, 0))
 

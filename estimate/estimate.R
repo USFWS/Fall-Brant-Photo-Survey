@@ -1,8 +1,8 @@
 #function to estimate population size from primary and secondary samples
 
 estimate1 <- function(y1 = NULL, y2 = NULL, areas = rep(1, length(y1)), total.area = NULL){
-  #take a primary and secondary sample for multiple species and 
-  # returns an estimate of the total for each species
+  #take a primary and secondary sample and 
+  # returns an estimate of the total
   # if both y1 and y2 have samples, a double sample estimate is returned,
   #  else a simple single sample estimate is returned based on SRS of plots
   # 
@@ -18,7 +18,7 @@ estimate1 <- function(y1 = NULL, y2 = NULL, areas = rep(1, length(y1)), total.ar
                         (sdx^2)/length(y1) )
   } else{
     if( length(y1) != length(y2) ) stop("sample vectors not equal length")
-    r <- sum(y1[ !is.na(y2) ])/sum(y2, na.rm = TRUE)
+    r <- sum(y2, na.rm = TRUE)/sum(y1[ !is.na(y2) ])
     x <- NULL
     total <- r*total.area*mean(y1)
     sdx <- sd(y1/areas)
